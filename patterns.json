@@ -1,0 +1,11 @@
+{
+  "bgmi": {
+    "Root_Detected": "7A 44",
+    "Report_Function": "11 49"
+  },
+  "ff": {
+    "Emulator_Bypass_AntiBan": "00 20 07 47",
+    "Memory_Scan_Detection": "?? 49 ?? 44"
+  }
+}
+
