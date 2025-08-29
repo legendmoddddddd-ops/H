@@ -235,7 +235,7 @@ def copy_to_downloads(path: str, verbose: bool) -> None:
 
 
 def scan_file_for_patterns(lib_path: str, patterns_map: dict, verbose: bool):
-    results = {}
+    results: dict[str, list[int]] = {}
     with open(lib_path, "rb") as f:
         with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
             debug_print(verbose, f"Read {len(mm)} bytes from {lib_path}")
@@ -252,15 +252,30 @@ def scan_file_for_patterns(lib_path: str, patterns_map: dict, verbose: bool):
                     continue
                 offsets = find_aob_matches(data, values, masks)
                 if offsets:
-                    hex_offsets = [hex(o) for o in offsets]
-                    results[name] = hex_offsets
-                    debug_print(verbose, f"Found offsets for {name}: {hex_offsets}")
+                    results[name] = offsets
+                    debug_print(verbose, f"Found offsets for {name}: {[hex(o) for o in offsets]}")
                 else:
                     debug_print(verbose, f"No offsets found for {name}.")
     return results
 
 
-def write_outputs(base_out_path: str, lib_path: str, results: dict, write_json: bool, verbose: bool):
+def _format_offset_line(offset: int, fmt: str) -> str:
+    if fmt == "hex":
+        return hex(offset)
+    if fmt == "dec":
+        return str(offset)
+    return f"{hex(offset)} ({offset})"
+
+
+def write_outputs(
+    base_out_path: str,
+    lib_path: str,
+    results: dict[str, list[int]],
+    write_json: bool,
+    offset_format: str,
+    write_csv: bool,
+    verbose: bool,
+):
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%SZ")
     lib_name = os.path.basename(lib_path)
 
@@ -271,7 +286,7 @@ def write_outputs(base_out_path: str, lib_path: str, results: dict, write_json: 
         for name, offs in results.items():
             text_lines.append(f"{name}:")
             for off in offs:
-                text_lines.append(f"  {off}")
+                text_lines.append(f"  {_format_offset_line(off, offset_format)}")
             text_lines.append("")
     else:
         text_lines.append("No patterns matched.")
@@ -284,17 +299,35 @@ def write_outputs(base_out_path: str, lib_path: str, results: dict, write_json: 
     # JSON output
     if write_json:
         json_out = base_out_path.replace(".txt", "") + ".json"
+        # Always include both hex and decimal forms for downstream use
+        results_hex = {k: [hex(v) for v in vals] for k, vals in results.items()}
+        results_dec = {k: [int(v) for v in vals] for k, vals in results.items()}
         payload = {
             "library": lib_name,
             "timestamp": timestamp,
-            "results": results,
+            "results_hex": results_hex,
+            "results_dec": results_dec,
         }
         with open(json_out, "w", encoding="utf-8") as jf:
             json.dump(payload, jf, indent=2)
         print(f"JSON output written to {json_out}")
-        return text_out, json_out
+    else:
+        json_out = None
 
-    return text_out, None
+    # CSV output
+    csv_out = None
+    if write_csv and results:
+        csv_out = base_out_path.replace(".txt", "") + ".csv"
+        import csv
+        with open(csv_out, "w", newline="", encoding="utf-8") as cf:
+            writer = csv.writer(cf)
+            writer.writerow(["pattern", "offset_hex", "offset_dec"])
+            for name, offs in results.items():
+                for off in offs:
+                    writer.writerow([name, hex(off), off])
+        print(f"CSV output written to {csv_out}")
+
+    return text_out, json_out, csv_out
 
 
 def main():
@@ -316,6 +349,13 @@ def main():
     )
     parser.add_argument("--out", default="output", help="Output file path or prefix (without extension)")
     parser.add_argument("--json", action="store_true", help="Also write JSON results")
+    parser.add_argument(
+        "--offset-format",
+        choices=["hex", "dec", "both"],
+        default="hex",
+        help="How to display offsets in text output",
+    )
+    parser.add_argument("--csv", action="store_true", help="Also write CSV results")
     parser.add_argument("--copy-downloads", action="store_true", help="Copy outputs to ~/Downloads if present")
     parser.add_argument("--adb-log", action="store_true", help="Attempt to capture non-root adb logcat for context")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose debug output")
@@ -348,12 +388,22 @@ def main():
 
     results = scan_file_for_patterns(lib_path, patterns_map, args.verbose)
 
-    text_out, json_out = write_outputs(args.out, lib_path, results, args.json, args.verbose)
+    text_out, json_out, csv_out = write_outputs(
+        args.out,
+        lib_path,
+        results,
+        args.json,
+        args.offset_format,
+        args.csv,
+        args.verbose,
+    )
 
     if args.copy_downloads:
         copy_to_downloads(text_out, args.verbose)
         if json_out:
             copy_to_downloads(json_out, args.verbose)
+        if csv_out:
+            copy_to_downloads(csv_out, args.verbose)
 
     if args.adb_log:
         lines = run_adb_logcat(args.verbose)
